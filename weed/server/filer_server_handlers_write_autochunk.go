@@ -247,10 +247,14 @@ func (fs *FilerServer) saveMetaData(ctx context.Context, r *http.Request, fileNa
 		entry.Md5 = nil
 		entry.FileSize = entry.Size()
 	}
-
+	var fids []string
+	for _, value := range entry.Chunks {
+		fids = append(fids, value.FileId)
+	}
 	filerResult = &FilerPostResult{
 		Name: fileName,
 		Size: int64(entry.FileSize),
+		Fids: strings.Join(fids, "|"),
 	}
 
 	entry.Extended = SaveAmzMetaData(r, entry.Extended, false)

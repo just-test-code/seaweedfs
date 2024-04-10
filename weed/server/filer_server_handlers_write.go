@@ -31,6 +31,7 @@ type FilerPostResult struct {
 	Name  string `json:"name,omitempty"`
 	Size  int64  `json:"size,omitempty"`
 	Error string `json:"error,omitempty"`
+	Fids  string `json:"fid,omitempty"`
 }
 
 func (fs *FilerServer) assignNewFileInfo(so *operation.StorageOption) (fileId, urlLocation string, auth security.EncodedJwt, err error) {
