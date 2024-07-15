@@ -356,9 +356,9 @@ func (vl *VolumeLayout) DoneGrowRequest() {
 
 func (vl *VolumeLayout) ShouldGrowVolumes(option *VolumeGrowOption) bool {
 	total, active, crowded := vl.GetActiveVolumeCount(option)
-	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.ReplicaPlacement.String(), "total").Set(float64(total))
-	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.ReplicaPlacement.String(), "active").Set(float64(active))
-	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.ReplicaPlacement.String(), "crowded").Set(float64(crowded))
+	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.DataCenter, "total").Set(float64(total))
+	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.DataCenter, "active").Set(float64(active))
+	stats.MasterVolumeLayout.WithLabelValues(option.Collection, option.DataCenter, "crowded").Set(float64(crowded))
 	//glog.V(0).Infof("active volume: %d, high usage volume: %d\n", active, high)
 	return active <= crowded
 }
@@ -381,7 +381,7 @@ func (vl *VolumeLayout) GetActiveVolumeCount(option *VolumeGrowOption) (total, a
 				}
 				active++
 				info, _ := dn.GetVolumesById(v)
-				if float64(info.Size) > float64(vl.volumeSizeLimit)* VolumeGrowStrategy.Threshold{
+				if float64(info.Size) > float64(vl.volumeSizeLimit)*VolumeGrowStrategy.Threshold {
 					crowded++
 				}
 			}
