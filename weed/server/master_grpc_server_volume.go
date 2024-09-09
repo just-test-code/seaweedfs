@@ -3,8 +3,7 @@ package weed_server
 import (
 	"context"
 	"fmt"
-	"math/rand"
-	"reflect"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -38,19 +37,39 @@ func (ms *MasterServer) DoAutomaticVolumeGrow(req *topology.VolumeGrowRequest) {
 func (ms *MasterServer) ProcessGrowRequest() {
 	go func() {
 		for {
-			time.Sleep(14*time.Minute + time.Duration(120*rand.Float32())*time.Second)
 			if !ms.Topo.IsLeader() {
 				continue
 			}
-			for _, vl := range ms.Topo.ListVolumeLyauts() {
-				if !vl.HasGrowRequest() && vl.ShouldGrowVolumes(&topology.VolumeGrowOption{}) {
+			dcs := ms.Topo.ListDataCenters()
+			for _, vlc := range ms.Topo.ListVolumeLayoutCollections() {
+				vl := vlc.VolumeLayout
+				if vl.HasGrowRequest() {
+					continue
+				}
+				if vl.ShouldGrowVolumes(vlc.Collection) {
 					vl.AddGrowRequest()
 					ms.volumeGrowthRequestChan <- &topology.VolumeGrowRequest{
-						Option: vl.ToGrowOption(),
+						Option: vlc.ToGrowOption(),
 						Count:  vl.GetLastGrowCount(),
+						Reason: "collection autogrow",
+					}
+				} else {
+					for _, dc := range dcs {
+						if vl.ShouldGrowVolumesByDataNode("DataCenter", dc) {
+							vl.AddGrowRequest()
+							volumeGrowOption := vlc.ToGrowOption()
+							volumeGrowOption.DataCenter = dc
+							ms.volumeGrowthRequestChan <- &topology.VolumeGrowRequest{
+								Option: volumeGrowOption,
+								Count:  vl.GetLastGrowCount(),
+								Force:  true,
+								Reason: "per-dc autogrow",
+							}
+						}
 					}
 				}
 			}
+			time.Sleep(14*time.Minute + time.Duration(120*rand.Float32())*time.Second)
 		}
 	}()
 	go func() {
@@ -74,26 +93,29 @@ func (ms *MasterServer) ProcessGrowRequest() {
 			// filter out identical requests being processed
 			found := false
 			filter.Range(func(k, v interface{}) bool {
-				if reflect.DeepEqual(k, req) {
+				existingReq := k.(*topology.VolumeGrowRequest)
+				if existingReq.Equals(req) {
 					found = true
 				}
 				return !found
 			})
 
 			// not atomic but it's okay
-			if !found && vl.ShouldGrowVolumes(option) {
-				filter.Store(req, nil)
-				// we have lock called inside vg
-				go func(req *topology.VolumeGrowRequest, vl *topology.VolumeLayout) {
-					ms.DoAutomaticVolumeGrow(req)
-					vl.DoneGrowRequest()
-					filter.Delete(req)
-				}(req, vl)
-			} else {
+			if found || (!req.Force && !vl.ShouldGrowVolumes(req.Option.Collection)) {
 				glog.V(4).Infoln("discard volume grow request")
 				time.Sleep(time.Millisecond * 211)
 				vl.DoneGrowRequest()
+				continue
 			}
+
+			filter.Store(req, nil)
+			// we have lock called inside vg
+			glog.V(0).Infof("volume grow %+v", req)
+			go func(req *topology.VolumeGrowRequest, vl *topology.VolumeLayout) {
+				ms.DoAutomaticVolumeGrow(req)
+				vl.DoneGrowRequest()
+				filter.Delete(req)
+			}(req, vl)
 		}
 	}()
 }
@@ -221,7 +243,7 @@ func (ms *MasterServer) VacuumVolume(ctx context.Context, req *master_pb.VacuumV
 
 	resp := &master_pb.VacuumVolumeResponse{}
 
-	ms.Topo.Vacuum(ms.grpcDialOption, float64(req.GarbageThreshold), req.VolumeId, req.Collection, ms.preallocateSize)
+	ms.Topo.Vacuum(ms.grpcDialOption, float64(req.GarbageThreshold), ms.option.MaxParallelVacuumPerServer, req.VolumeId, req.Collection, ms.preallocateSize)
 
 	return resp, nil
 }
