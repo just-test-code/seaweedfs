@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"github.com/seaweedfs/seaweedfs/weed/glog"
+	"github.com/seaweedfs/seaweedfs/weed/mq/logstore"
 	"github.com/seaweedfs/seaweedfs/weed/mq/pub_balancer"
 	"github.com/seaweedfs/seaweedfs/weed/mq/topic"
 	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"github.com/seaweedfs/seaweedfs/weed/pb/mq_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/schema_pb"
 	"sync"
 )
 
@@ -26,7 +28,7 @@ func (b *MessageQueueBroker) AssignTopicPartitions(c context.Context, request *m
 		} else {
 			var localPartition *topic.LocalPartition
 			if localPartition = b.localTopicManager.GetLocalPartition(t, partition); localPartition == nil {
-				localPartition = topic.NewLocalPartition(partition, b.genLogFlushFunc(t, assignment.Partition), b.genLogOnDiskReadFunc(t, assignment.Partition))
+				localPartition = topic.NewLocalPartition(partition, b.genLogFlushFunc(t, partition), logstore.GenMergedReadFunc(b, t, partition))
 				b.localTopicManager.AddLocalPartition(t, localPartition)
 			}
 		}
@@ -54,7 +56,7 @@ func (b *MessageQueueBroker) AssignTopicPartitions(c context.Context, request *m
 
 // called by broker leader to drain existing partitions.
 // new/updated partitions will be detected by broker from the filer
-func (b *MessageQueueBroker) assignTopicPartitionsToBrokers(ctx context.Context, t *mq_pb.Topic, assignments []*mq_pb.BrokerPartitionAssignment, isAdd bool) error {
+func (b *MessageQueueBroker) assignTopicPartitionsToBrokers(ctx context.Context, t *schema_pb.Topic, assignments []*mq_pb.BrokerPartitionAssignment, isAdd bool) error {
 	// notify the brokers to create the topic partitions in parallel
 	var wg sync.WaitGroup
 	for _, bpa := range assignments {

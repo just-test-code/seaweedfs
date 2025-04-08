@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/exp/slices"
+	"slices"
 
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/operation"
@@ -27,7 +27,7 @@ var bufPool = sync.Pool{
 	},
 }
 
-func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName, contentType string, contentLength int64, so *operation.StorageOption) (fileChunks []*filer_pb.FileChunk, md5Hash hash.Hash, chunkOffset int64, uploadErr error, smallContent []byte) {
+func (fs *FilerServer) uploadRequestToChunks(w http.ResponseWriter, r *http.Request, reader io.Reader, chunkSize int32, fileName, contentType string, contentLength int64, so *operation.StorageOption) (fileChunks []*filer_pb.FileChunk, md5Hash hash.Hash, chunkOffset int64, uploadErr error, smallContent []byte) {
 	query := r.URL.Query()
 
 	isAppend := isAppend(r)
@@ -45,7 +45,13 @@ func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Reque
 		chunkOffset = offsetInt
 	}
 
+	return fs.uploadReaderToChunks(reader, chunkOffset, chunkSize, fileName, contentType, isAppend, so)
+}
+
+func (fs *FilerServer) uploadReaderToChunks(reader io.Reader, startOffset int64, chunkSize int32, fileName, contentType string, isAppend bool, so *operation.StorageOption) (fileChunks []*filer_pb.FileChunk, md5Hash hash.Hash, chunkOffset int64, uploadErr error, smallContent []byte) {
+
 	md5Hash = md5.New()
+	chunkOffset = startOffset
 	var partReader = io.NopCloser(io.TeeReader(reader, md5Hash))
 
 	var wg sync.WaitGroup
@@ -57,6 +63,16 @@ func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Reque
 
 		// need to throttle used byte buffer
 		bytesBufferLimitChan <- struct{}{}
+
+		// As long as there is an error in the upload of one chunk, it can be terminated early
+		// uploadErr may be modified in other go routines, lock is needed to avoid race condition
+		uploadErrLock.Lock()
+		if uploadErr != nil {
+			<-bytesBufferLimitChan
+			uploadErrLock.Unlock()
+			break
+		}
+		uploadErrLock.Unlock()
 
 		bytesBuffer := bufPool.Get().(*bytes.Buffer)
 
@@ -94,14 +110,14 @@ func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Reque
 		}
 
 		wg.Add(1)
-		go func(offset int64) {
+		go func(offset int64, buf *bytes.Buffer) {
 			defer func() {
-				bufPool.Put(bytesBuffer)
+				bufPool.Put(buf)
 				<-bytesBufferLimitChan
 				wg.Done()
 			}()
 
-			chunks, toChunkErr := fs.dataToChunk(fileName, contentType, bytesBuffer.Bytes(), offset, so)
+			chunks, toChunkErr := fs.dataToChunk(fileName, contentType, buf.Bytes(), offset, so)
 			if toChunkErr != nil {
 				uploadErrLock.Lock()
 				if uploadErr == nil {
@@ -118,7 +134,7 @@ func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Reque
 				}
 				fileChunksLock.Unlock()
 			}
-		}(chunkOffset)
+		}(chunkOffset, bytesBuffer)
 
 		// reset variables for the next chunk
 		chunkOffset = chunkOffset + dataSize
@@ -132,6 +148,10 @@ func (fs *FilerServer) uploadReaderToChunks(w http.ResponseWriter, r *http.Reque
 	wg.Wait()
 
 	if uploadErr != nil {
+		glog.V(0).Infof("upload file %s error: %v", fileName, uploadErr)
+		for _, chunk := range fileChunks {
+			glog.V(4).Infof("purging failed uploaded %s chunk %s [%d,%d)", fileName, chunk.FileId, chunk.Offset, chunk.Offset+int64(chunk.Size))
+		}
 		fs.filer.DeleteUncommittedChunks(fileChunks)
 		return nil, md5Hash, 0, uploadErr, nil
 	}

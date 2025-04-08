@@ -2,7 +2,6 @@ package log_buffer
 
 import (
 	"bytes"
-	"github.com/seaweedfs/seaweedfs/weed/pb/mq_pb"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,11 +10,12 @@ import (
 
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/pb/mq_pb"
 	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
-const BufferSize = 4 * 1024 * 1024
-const PreviousBufferCount = 3
+const BufferSize = 8 * 1024 * 1024
+const PreviousBufferCount = 32
 
 type dataToFlush struct {
 	startTime time.Time
@@ -46,7 +46,7 @@ type LogBuffer struct {
 	isStopping        *atomic.Bool
 	isAllFlushed      bool
 	flushChan         chan *dataToFlush
-	LastTsNs          int64
+	LastTsNs          atomic.Int64
 	sync.RWMutex
 }
 
@@ -95,12 +95,12 @@ func (logBuffer *LogBuffer) AddDataToBuffer(partitionKey, data []byte, processin
 	} else {
 		ts = time.Unix(0, processingTsNs)
 	}
-	if logBuffer.LastTsNs >= processingTsNs {
+	if logBuffer.LastTsNs.Load() >= processingTsNs {
 		// this is unlikely to happen, but just in case
-		processingTsNs = logBuffer.LastTsNs + 1
+		processingTsNs = logBuffer.LastTsNs.Add(1)
 		ts = time.Unix(0, processingTsNs)
 	}
-	logBuffer.LastTsNs = processingTsNs
+	logBuffer.LastTsNs.Store(processingTsNs)
 	logEntry := &filer_pb.LogEntry{
 		TsNs:             processingTsNs,
 		PartitionKeyHash: util.HashToInt32(partitionKey),

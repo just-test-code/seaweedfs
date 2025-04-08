@@ -34,6 +34,7 @@ type LocalPartition struct {
 }
 
 var TIME_FORMAT = "2006-01-02-15-04-05"
+var PartitionGenerationFormat = "v2006-01-02-15-04-05"
 
 func NewLocalPartition(partition Partition, logFlushFn log_buffer.LogFlushFuncType, readFromDiskFn log_buffer.LogReadFromDiskFuncType) *LocalPartition {
 	lp := &LocalPartition{
@@ -88,12 +89,16 @@ func (p *LocalPartition) Subscribe(clientName string, startPosition log_buffer.M
 			return nil
 		}
 
-		startPosition = processedPosition
+		if processedPosition.Time.UnixNano() != 0 {
+			startPosition = processedPosition
+		}
 		processedPosition, isDone, readInMemoryLogErr = p.LogBuffer.LoopProcessLogData(clientName, startPosition, 0, onNoMessageFn, eachMessageFn)
 		if isDone {
 			return nil
 		}
-		startPosition = processedPosition
+		if processedPosition.Time.UnixNano() != 0 {
+			startPosition = processedPosition
+		}
 
 		if readInMemoryLogErr == log_buffer.ResumeFromDiskError {
 			continue

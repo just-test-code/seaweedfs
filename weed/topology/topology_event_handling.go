@@ -27,7 +27,7 @@ func (t *Topology) StartRefreshWritableVolumes(grpcDialOption grpc.DialOption, g
 		for {
 			if t.IsLeader() {
 				if !t.isDisableVacuum {
-					t.Vacuum(grpcDialOption, garbageThreshold, concurrentVacuumLimitPerVolumeServer, 0, "", preallocate)
+					t.Vacuum(grpcDialOption, garbageThreshold, concurrentVacuumLimitPerVolumeServer, 0, "", preallocate, true)
 				}
 			} else {
 				stats.MasterReplicaPlacementMismatch.Reset()
@@ -65,10 +65,9 @@ func (t *Topology) SetVolumeCapacityFull(volumeInfo storage.VolumeInfo) bool {
 		if !volumeInfo.ReadOnly {
 
 			disk := dn.getOrCreateDisk(volumeInfo.DiskType)
-			deltaDiskUsages := newDiskUsages()
-			deltaDiskUsage := deltaDiskUsages.getOrCreateDisk(types.ToDiskType(volumeInfo.DiskType))
-			deltaDiskUsage.activeVolumeCount = -1
-			disk.UpAdjustDiskUsageDelta(deltaDiskUsages)
+			disk.UpAdjustDiskUsageDelta(types.ToDiskType(volumeInfo.DiskType), &DiskUsageCounts{
+				activeVolumeCount: -1,
+			})
 
 		}
 	}
@@ -96,7 +95,9 @@ func (t *Topology) UnRegisterDataNode(dn *DataNode) {
 	}
 
 	negativeUsages := dn.GetDiskUsages().negative()
-	dn.UpAdjustDiskUsageDelta(negativeUsages)
+	for dt, du := range negativeUsages.usages {
+		dn.UpAdjustDiskUsageDelta(dt, du)
+	}
 	dn.DeltaUpdateVolumes([]storage.VolumeInfo{}, dn.GetVolumes())
 	dn.DeltaUpdateEcShards([]*erasure_coding.EcVolumeInfo{}, dn.GetEcShards())
 	if dn.Parent() != nil {

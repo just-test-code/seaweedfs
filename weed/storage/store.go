@@ -57,7 +57,8 @@ type ReadOption struct {
 type Store struct {
 	MasterAddress       pb.ServerAddress
 	grpcDialOption      grpc.DialOption
-	volumeSizeLimit     uint64 // read from the master
+	volumeSizeLimit     uint64      // read from the master
+	preallocate         atomic.Bool // read from the master
 	Ip                  string
 	Port                int
 	GrpcPort            int
@@ -380,19 +381,32 @@ func (s *Store) CollectHeartbeat() *master_pb.Heartbeat {
 
 func (s *Store) deleteExpiredEcVolumes() (ecShards, deleted []*master_pb.VolumeEcShardInformationMessage) {
 	for _, location := range s.Locations {
+		// Collect ecVolume to be deleted
+		var toDeleteEvs []*erasure_coding.EcVolume
+		location.ecVolumesLock.RLock()
 		for _, ev := range location.ecVolumes {
-			messages := ev.ToVolumeEcShardInformationMessage()
 			if ev.IsTimeToDestroy() {
-				err := location.deleteEcVolumeById(ev.VolumeId)
-				if err != nil {
-					ecShards = append(ecShards, messages...)
-					glog.Errorf("delete EcVolume err %d: %v", ev.VolumeId, err)
-					continue
-				}
-				deleted = append(deleted, messages...)
+				toDeleteEvs = append(toDeleteEvs, ev)
 			} else {
+				messages := ev.ToVolumeEcShardInformationMessage()
 				ecShards = append(ecShards, messages...)
 			}
+		}
+		location.ecVolumesLock.RUnlock()
+
+		// Delete expired volumes
+		for _, ev := range toDeleteEvs {
+			messages := ev.ToVolumeEcShardInformationMessage()
+			// deleteEcVolumeById has its own lock
+			err := location.deleteEcVolumeById(ev.VolumeId)
+			if err != nil {
+				ecShards = append(ecShards, messages...)
+				glog.Errorf("delete EcVolume err %d: %v", ev.VolumeId, err)
+				continue
+			}
+			// No need for additional lock here since we only need the messages
+			// from volumes that were already collected
+			deleted = append(deleted, messages...)
 		}
 	}
 	return
@@ -470,14 +484,16 @@ func (s *Store) HasVolume(i needle.VolumeId) bool {
 	return v != nil
 }
 
-func (s *Store) MarkVolumeReadonly(i needle.VolumeId) error {
+func (s *Store) MarkVolumeReadonly(i needle.VolumeId, persist bool) error {
 	v := s.findVolume(i)
 	if v == nil {
 		return fmt.Errorf("volume %d not found", i)
 	}
 	v.noWriteLock.Lock()
 	v.noWriteOrDelete = true
-	v.PersistReadOnly(true)
+	if persist {
+		v.PersistReadOnly(true)
+	}
 	v.noWriteLock.Unlock()
 	return nil
 }
@@ -532,7 +548,6 @@ func (s *Store) UnmountVolume(i needle.VolumeId) error {
 		err := location.UnloadVolume(i)
 		if err == nil {
 			glog.V(0).Infof("UnmountVolume %d", i)
-			stats.DeleteCollectionMetrics(v.Collection)
 			s.DeletedVolumesChan <- message
 			return nil
 		} else if err == ErrVolumeNotFound {
@@ -607,6 +622,14 @@ func (s *Store) GetVolumeSizeLimit() uint64 {
 	return atomic.LoadUint64(&s.volumeSizeLimit)
 }
 
+func (s *Store) SetPreallocate(x bool) {
+	s.preallocate.Store(x)
+}
+
+func (s *Store) GetPreallocate() bool {
+	return s.preallocate.Load()
+}
+
 func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 	volumeSizeLimit := s.GetVolumeSizeLimit()
 	if volumeSizeLimit == 0 {
@@ -617,10 +640,15 @@ func (s *Store) MaybeAdjustVolumeMax() (hasChanges bool) {
 		if diskLocation.OriginalMaxVolumeCount == 0 {
 			currentMaxVolumeCount := atomic.LoadInt32(&diskLocation.MaxVolumeCount)
 			diskStatus := stats.NewDiskStatus(diskLocation.Directory)
-			unusedSpace := diskLocation.UnUsedSpace(volumeSizeLimit)
-			unclaimedSpaces := int64(diskStatus.Free) - int64(unusedSpace)
+			var unusedSpace uint64 = 0
+			unclaimedSpaces := int64(diskStatus.Free)
+			if !s.GetPreallocate() {
+				unusedSpace = diskLocation.UnUsedSpace(volumeSizeLimit)
+				unclaimedSpaces -= int64(unusedSpace)
+			}
 			volCount := diskLocation.VolumesLen()
-			maxVolumeCount := int32(volCount)
+			ecShardCount := diskLocation.EcShardCount()
+			maxVolumeCount := int32(volCount) + int32((ecShardCount+erasure_coding.DataShardsCount)/erasure_coding.DataShardsCount)
 			if unclaimedSpaces > int64(volumeSizeLimit) {
 				maxVolumeCount += int32(uint64(unclaimedSpaces)/volumeSizeLimit) - 1
 			}

@@ -47,6 +47,11 @@ func (fh *FileHandle) readFromChunks(buff []byte, offset int64) (int64, int64, e
 	if fileSize == 0 {
 		glog.V(1).Infof("empty fh %v", fileFullPath)
 		return 0, 0, io.EOF
+	} else if offset == fileSize {
+		return 0, 0, io.EOF
+	} else if offset >= fileSize {
+		glog.V(1).Infof("invalid read, fileSize %d, offset %d for %s", fileSize, offset, fileFullPath)
+		return 0, 0, io.EOF
 	}
 
 	if offset < int64(len(entry.Content)) {
@@ -66,7 +71,7 @@ func (fh *FileHandle) readFromChunks(buff []byte, offset int64) (int64, int64, e
 	return int64(totalRead), ts, err
 }
 
-func (fh *FileHandle) downloadRemoteEntry(entry *LockedEntry) (error) {
+func (fh *FileHandle) downloadRemoteEntry(entry *LockedEntry) error {
 
 	fileFullPath := fh.FullPath()
 	dir, _ := fileFullPath.DirAndName()
@@ -84,7 +89,7 @@ func (fh *FileHandle) downloadRemoteEntry(entry *LockedEntry) (error) {
 			return fmt.Errorf("CacheRemoteObjectToLocalCluster file %s: %v", fileFullPath, err)
 		}
 
-		entry.SetEntry(resp.Entry)
+		fh.SetEntry(resp.Entry)
 
 		fh.wfs.metaCache.InsertEntry(context.Background(), filer.FromPbEntry(request.Directory, resp.Entry))
 

@@ -12,6 +12,14 @@ type ReplicaPlacement struct {
 
 func NewReplicaPlacementFromString(t string) (*ReplicaPlacement, error) {
 	rp := &ReplicaPlacement{}
+	switch len(t) {
+	case 0:
+		t = "000"
+	case 1:
+		t = "00" + t
+	case 2:
+		t = "0" + t
+	}
 	for i, c := range t {
 		count := int(c - '0')
 		if count < 0 {
@@ -35,6 +43,19 @@ func NewReplicaPlacementFromString(t string) (*ReplicaPlacement, error) {
 
 func NewReplicaPlacementFromByte(b byte) (*ReplicaPlacement, error) {
 	return NewReplicaPlacementFromString(fmt.Sprintf("%03d", b))
+}
+
+func (rp *ReplicaPlacement) HasReplication() bool {
+	return rp.DiffDataCenterCount != 0 || rp.DiffRackCount != 0 || rp.SameRackCount != 0
+}
+
+func (a *ReplicaPlacement) Equals(b *ReplicaPlacement) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return (a.SameRackCount == b.SameRackCount &&
+		a.DiffRackCount == b.DiffRackCount &&
+		a.DiffDataCenterCount == b.DiffDataCenterCount)
 }
 
 func (rp *ReplicaPlacement) Byte() byte {

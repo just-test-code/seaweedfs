@@ -21,6 +21,11 @@ import (
 
 func (fs *FilerServer) filerHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	inFlightGauge := stats.FilerInFlightRequestsGauge.WithLabelValues(r.Method)
+	inFlightGauge.Inc()
+	defer inFlightGauge.Dec()
+
 	statusRecorder := stats.NewStatusResponseWriter(w)
 	w = statusRecorder
 	origin := r.Header.Get("Origin")
@@ -75,7 +80,7 @@ func (fs *FilerServer) filerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Server", "SeaweedFS Filer "+util.VERSION)
+	w.Header().Set("Server", "SeaweedFS "+util.VERSION)
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -163,7 +168,7 @@ func (fs *FilerServer) readonlyFilerHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	w.Header().Set("Server", "SeaweedFS Filer "+util.VERSION)
+	w.Header().Set("Server", "SeaweedFS "+util.VERSION)
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -224,7 +229,7 @@ func (fs *FilerServer) maybeCheckJwtAuthorization(r *http.Request, isWrite bool)
 }
 
 func (fs *FilerServer) filerHealthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Server", "SeaweedFS Filer "+util.VERSION)
+	w.Header().Set("Server", "SeaweedFS "+util.VERSION)
 	if _, err := fs.filer.Store.FindEntry(context.Background(), filer.TopicsDir); err != nil && err != filer_pb.ErrNotFound {
 		glog.Warningf("filerHealthzHandler FindEntry: %+v", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
